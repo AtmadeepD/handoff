@@ -22,4 +22,32 @@ describe('M1 room lobby two-client test', () => {
     expect(joined.room.code).toBe(created.room.code);
     expect(joined.room.players.map(p => p.nickname).sort()).toEqual(['Aster', 'Beacon']);
   });
+
+  it('restores the same seat and host role when a player reconnects with their token', async () => {
+    const host = clientIO(url, { transports: ['websocket'] });
+    await waitFor<void>(host, 'connect');
+    const createdP = waitFor<{ room: { code: string; hostId: string }; reconnectToken: string; playerId: string }>(host, 'room_created');
+    host.emit('create_room', { nickname: 'Host' });
+    const created = await createdP;
+    expect(created.reconnectToken).not.toBe(created.playerId); // token must not be the public player id
+    host.disconnect();
+    const again = clientIO(url, { transports: ['websocket'] });
+    await waitFor<void>(again, 'connect');
+    const rejoinP = waitFor<{ room: { hostId: string; players: { id: string; seat: number }[] }; playerId: string }>(again, 'room_joined');
+    again.emit('join_room', { code: created.room.code, reconnectToken: created.reconnectToken });
+    const rejoined = await rejoinP;
+    expect(rejoined.playerId).toBe(created.playerId);
+    expect(rejoined.room.hostId).toBe(created.playerId);
+    expect(rejoined.room.players).toHaveLength(1);
+    again.disconnect();
+  });
+
+  it('rejects an unknown room code with a readable error', async () => {
+    const c = clientIO(url, { transports: ['websocket'] });
+    await waitFor<void>(c, 'connect');
+    const errP = waitFor<{ message: string }>(c, 'room_error');
+    c.emit('join_room', { code: 'ZZZZ', nickname: 'Lost' });
+    expect((await errP).message).toMatch(/not found/i);
+    c.disconnect();
+  });
 });

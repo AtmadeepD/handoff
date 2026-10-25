@@ -2,8 +2,9 @@ import express from 'express';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { randomBytes } from 'node:crypto';
 import { Server, Socket } from 'socket.io';
-import { AIRPORT_STYLES, COLORS } from './shared/HANDOFF_DATA.js';
+import { AIRPORT_STYLES } from './shared/HANDOFF_DATA.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -19,6 +20,7 @@ type Room = { code: string; hostId: string; players: Map<string, Player>; create
 const rooms = new Map<string, Room>();
 const socketPlayers = new Map<string, { code: string; playerId: string }>();
 
+function newToken(): string { return randomBytes(18).toString('base64url'); }
 function codeCandidate(): string {
   let code = '';
   for (let i = 0; i < 4; i++) code += CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)];
@@ -57,7 +59,7 @@ app.disable('x-powered-by');
 app.get('/health', (_req, res) => res.status(200).json({ ok: true, service: 'handoff', rooms: rooms.size, uptimeSeconds: Math.floor(process.uptime()) }));
 app.get('/api/status', (_req, res) => res.json({ ok: true, rooms: rooms.size, maxPlayers: MAX_PLAYERS }));
 app.use(express.static(path.join(__dirname, '../public')));
-app.get('*', (_req, res) => res.sendFile(path.join(__dirname, '../dist/public/index.html')));
+app.get('*', (_req, res) => res.sendFile(path.join(__dirname, '../public/index.html')));
 
 io.on('connection', socket => {
   socket.on('create_room', (payload: { nickname?: unknown } = {}) => {
@@ -67,8 +69,9 @@ io.on('connection', socket => {
     const playerId = socket.id;
     const player: Player = { id: playerId, nickname, seat: 0, color: AIRPORT_STYLES[0].color, connected: true, joinedAt: Date.now() };
     const room: Room = { code, hostId: playerId, players: new Map([[playerId, player]]), createdAt: Date.now(), lastActiveAt: Date.now(), settings: { shift: 1, difficulty: 'controller' }, reconnectTokens: new Map() };
-    room.reconnectTokens.set(playerId, playerId); rooms.set(code, room); bindPlayer(socket, room, player);
-    socket.emit('room_created', { room: publicRoom(room), reconnectToken: playerId }); broadcast(room);
+    const reconnectToken = newToken();
+    room.reconnectTokens.set(reconnectToken, playerId); rooms.set(code, room); bindPlayer(socket, room, player);
+    socket.emit('room_created', { room: publicRoom(room), reconnectToken, playerId }); broadcast(room);
   });
 
   socket.on('join_room', (payload: { code?: unknown; nickname?: unknown; reconnectToken?: unknown } = {}) => {
@@ -81,7 +84,7 @@ io.on('connection', socket => {
       const player = room.players.get(playerId);
       if (player) {
         for (const [sid, bound] of socketPlayers) if (bound.code === code && bound.playerId === playerId) io.sockets.sockets.get(sid)?.disconnect(true);
-        player.connected = true; bindPlayer(socket, room, player); socket.emit('room_joined', { room: publicRoom(room), reconnectToken: token }); broadcast(room); return;
+        player.connected = true; bindPlayer(socket, room, player); socket.emit('room_joined', { room: publicRoom(room), reconnectToken: token, playerId }); broadcast(room); return;
       }
     }
     const nickname = cleanNickname(payload.nickname);
@@ -89,10 +92,10 @@ io.on('connection', socket => {
     if (room.players.size >= MAX_PLAYERS) return fail(socket, 'This room is full (6 controllers maximum).');
     const seat = [...room.players.values()].reduce((max, p) => Math.max(max, p.seat), -1) + 1;
     const playerId = socket.id;
-    const reconnectToken = `${code}-${playerId}-${Math.random().toString(36).slice(2, 14)}`;
+    const reconnectToken = newToken();
     const player: Player = { id: playerId, nickname, seat, color: AIRPORT_STYLES[seat % AIRPORT_STYLES.length].color, connected: true, joinedAt: Date.now() };
     room.players.set(playerId, player); room.reconnectTokens.set(reconnectToken, playerId); bindPlayer(socket, room, player);
-    socket.emit('room_joined', { room: publicRoom(room), reconnectToken }); broadcast(room);
+    socket.emit('room_joined', { room: publicRoom(room), reconnectToken, playerId }); broadcast(room);
   });
 
   socket.on('set_settings', (payload: { shift?: unknown; difficulty?: unknown } = {}) => {
